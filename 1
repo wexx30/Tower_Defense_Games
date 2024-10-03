@@ -1,0 +1,1104 @@
+#include <SDL.h>
+#include <SDL_image.h>
+#include <windows.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <stdbool.h>
+
+
+SDL_Renderer *renderer= NULL;
+SDL_Texture* normalPlayer;
+SDL_Texture* pPlayer;
+SDL_Texture* bPlayer;
+
+int windowWidth=0;
+int windowHeight=0;
+int fieldWidth = 1200;
+int fieldHeight = 0; 
+int fieldX = 150; 
+int fieldY = 100; 
+int cellWidth = 0;
+int cellHeight = 0;
+bool GameOver = false;
+bool GameWin = false;
+int numSpirit = 0;
+
+#define FieldRow 5
+#define FieldCol 21
+#define NumEnemy 30
+#define windowWidth 1500
+#define windowHeight 720
+#define UpdateRole 7
+#define AddNewEnemy 1000
+#define AddNewSpirit 500
+#define SizeOfSpirit 150
+#define fallingSpeed 2
+#define GOAL 10
+#define Timer1 200
+#define Timer2 400
+#define Timer3 200
+#define Timer4 400
+#define Timer5 600
+#define numItems 5
+#define Unlock2 7
+#define Unlock3 14
+
+typedef enum {
+    FIRE,
+    SICKLE,
+    SPELL,
+    DEER,
+    CRUCIO,
+    IMPERIO,
+    AVADA_KEDAVRA,
+    GUARD,
+} MagicType;
+
+typedef struct Magic{
+    SDL_Rect rect;   
+    int speed;       
+    int isActive;    
+    MagicType Type;
+    SDL_Texture* texture; 
+} Magic;
+
+typedef struct {
+    SDL_Texture* texture;
+    SDL_Rect rect;
+    SDL_Texture* textureDraged;
+    int time;
+    int isActive;
+} ItemBox;
+
+typedef struct {
+    SDL_Texture* texture;
+    SDL_Rect rect;
+    int isActive;
+} Spirit;
+
+Spirit spirit;
+
+typedef struct {
+    SDL_Rect rect;
+    int isSelected;
+    SDL_Texture* texture;
+    int whoOccupied; 
+} Field;
+
+Field fields[FieldCol * FieldRow];
+
+typedef enum {
+    ENEMY_TYPE_1,
+    ENEMY_TYPE_2,
+    ENEMY_TYPE_3,
+} EnemyType;
+
+typedef enum {
+    PLAYER_TYPE_1,
+    PLAYER_TYPE_2,
+    PLAYER_TYPE_3,
+    PLAYER_TYPE_4,
+    PLAYER_TYPE_5,
+    PLAYER_TYPE_6,
+} PlayerType;
+
+typedef struct Enemy {
+    EnemyType type;
+    int field;
+    int health;
+    int speed;
+    int attackPower;
+    char* skill;
+    SDL_Texture* texture;
+    SDL_Rect rect;
+    int isActive;
+    struct Enemy* next;
+    struct Magic* magic;
+} Enemy;
+
+typedef struct Player{
+    PlayerType type;
+    int field;
+    int health;
+    int speed;
+    int attackPower;
+    char* skill;
+    int paralyzedTurns;
+    int betrayalTurns;
+    SDL_Texture* texture;
+    SDL_Rect rect;
+    struct Player* next;
+    struct Magic* magic;
+} Player;
+
+int CheckOverlap(SDL_Rect rectA, SDL_Rect rectB) {
+    return (rectA.x < rectB.x + rectB.w) &&
+           (rectA.x + rectA.w > rectB.x) &&
+           (rectA.y < rectB.y + rectB.h) &&
+           (rectA.y + rectA.h > rectB.y);
+}
+
+void ApplyMagicEffectToEnemy(Magic* magic, Enemy* enemy, Player* player) {
+    switch (magic->Type) {
+        case FIRE:
+            enemy->health-=player->attackPower;
+        case SICKLE:
+            enemy->health-=player->attackPower;
+            player->health+=player->attackPower;
+        case SPELL:
+            enemy->health-=player->attackPower;
+            enemy->speed/2;
+        case DEER:
+            enemy->attackPower = 0;  
+            break;
+    }
+}
+
+void ApplyMagicEffectToPlayer(Magic* magic, Player* player, Enemy* enemy) {
+    switch (magic->Type) {
+        case CRUCIO:
+            player->health -= enemy->attackPower;  
+            if(player->type!=PLAYER_TYPE_4 && player->type!=PLAYER_TYPE_5 && player->type!=PLAYER_TYPE_6){
+                player->paralyzedTurns += 50;  
+                player->texture = pPlayer;
+            }
+            break;
+        case IMPERIO:
+            player->health -= enemy->attackPower; 
+            if(player->type!=PLAYER_TYPE_4 && player->type!=PLAYER_TYPE_5 && player->type!=PLAYER_TYPE_6){
+                player->betrayalTurns += 50;  
+                player->texture = bPlayer;
+            } 
+            break;
+        case AVADA_KEDAVRA:
+            player->health -= enemy->attackPower; 
+            break;
+    }
+}
+
+void UpdateMagic(Magic* magic, Player* players, Enemy* enemies, SDL_Rect Home) {
+    if (magic->isActive) {
+        int magicDirection;
+        if (magic->Type == FIRE || magic->Type == SICKLE || magic->Type == SPELL || magic->Type == DEER || magic->Type == GUARD) {
+            magicDirection = 1; 
+        } else {
+            magicDirection = -1; 
+        }
+
+        magic->rect.x += magic->speed * magicDirection;
+        if((magicDirection == 1 && magic->rect.x > Home.x)||magicDirection == -1 && magic->rect.x < Home.x){
+            magic->isActive = 0;
+        }
+        else if (magicDirection == 1 && players->betrayalTurns==0 && players->paralyzedTurns==0) { 
+            for (Enemy* currentEnemy = enemies; currentEnemy != NULL; currentEnemy = currentEnemy->next) {
+                if (CheckOverlap(magic->rect, currentEnemy->rect)) {
+                    magic->isActive = 0;
+                    ApplyMagicEffectToEnemy(magic, currentEnemy,players);
+                    break;
+                }
+            }
+
+        } 
+        else if(magicDirection == 1 && players->betrayalTurns>0){
+            players->health-=players->attackPower;
+        } 
+        else if(magicDirection == -1 ) {  
+            for (Player* currentPlayer = players; currentPlayer != NULL; currentPlayer = currentPlayer->next) {
+                if (CheckOverlap(magic->rect, currentPlayer->rect)&& players->betrayalTurns==0) {
+                    magic->isActive = 0;
+                    ApplyMagicEffectToPlayer(magic, currentPlayer, enemies);
+                    break;
+                }
+            }
+        }
+    }
+    else{
+        magic->isActive=1;
+        if (magic->Type == FIRE || magic->Type == SICKLE || magic->Type == SPELL || magic->Type == DEER) {
+            magic->rect.x=players->rect.x ;
+        } else {
+            magic->rect.x=enemies->rect.x ;
+        }
+        
+    }
+}
+
+
+int CheckFieldOccupiedByPlayer(SDL_Rect enemyRect, Player* players, int speed) {
+    SDL_Rect nextPosition = enemyRect;
+    nextPosition.x -= speed;
+
+    while (players != NULL) {
+        if (CheckOverlap(nextPosition, players->rect)) {
+            return 1; 
+        }
+        players = players->next;
+    }
+
+    return 0; 
+}
+
+void UpdateEnemy(Enemy* enemy, SDL_Rect playerHomeRect,Player* players) {
+
+    if (SDL_HasIntersection(&enemy->rect, &playerHomeRect)) {
+        GameOver = true; 
+        return;
+    }
+
+    if (!CheckFieldOccupiedByPlayer(enemy->rect, players, enemy->speed)) {
+        enemy->rect.x -= enemy->speed;
+    }
+}
+
+
+void UpdatePlayer(Player* player) {
+    if(player->betrayalTurns>0)
+        player->betrayalTurns--;
+    if(player->paralyzedTurns>0)
+        player->paralyzedTurns--;
+    if(player->betrayalTurns==0 && player->paralyzedTurns==0 && player->type!=PLAYER_TYPE_4 && player->type!=PLAYER_TYPE_5 && player->type!=PLAYER_TYPE_6){
+        player->texture = normalPlayer;
+    }
+        
+}
+
+void InitializeMagic(Magic* magic, int type, SDL_Rect startPos) {
+    magic->rect = startPos;
+    magic->isActive = 1;
+    switch (type) {
+        case 1:
+            magic->speed = 5; 
+            magic->Type = FIRE;
+            magic->texture = IMG_LoadTexture(renderer, "image/fire.png"); 
+            break;
+        case 2:
+            magic->speed = 2; 
+            magic->Type = SICKLE;
+            magic->texture = IMG_LoadTexture(renderer, "image/sickle.png");
+            break;
+        case 3:
+            magic->speed = 10; 
+            magic->Type = SPELL;
+            magic->texture = IMG_LoadTexture(renderer, "image/spell.png");
+            break;
+        case 4:
+            magic->speed = 0; 
+            magic->Type = DEER;
+            magic->texture = IMG_LoadTexture(renderer, "image/deer.png");
+            break;
+        case 5:
+            magic->speed = 5; 
+            magic->Type = CRUCIO;
+            magic->texture = IMG_LoadTexture(renderer, "image/crucio.png");
+            break;
+        case 6:
+            magic->speed = 5; 
+            magic->Type = IMPERIO;
+            magic->texture = IMG_LoadTexture(renderer, "image/Imperio.png");
+            break;
+        case 7:
+            magic->speed = 10; 
+            magic->Type = AVADA_KEDAVRA;
+            magic->texture = IMG_LoadTexture(renderer, "image/Avada.png");
+            break;
+        case 8:
+            magic->speed = 0; 
+            magic->Type = GUARD;
+            magic->texture = IMG_LoadTexture(renderer, "image/guardrail1.png");
+            break;
+        case 9:
+            magic->speed = 0; 
+            magic->Type = GUARD;
+            magic->texture = IMG_LoadTexture(renderer, "image/guardrail2.png");
+            break;
+    }
+}
+
+
+void InitializeEnemy(Enemy* enemy, EnemyType type){
+    enemy->type=type;
+    int j= rand() % FieldRow;
+    int x = fieldX + fieldWidth - cellWidth;
+    int y = fieldY + j * cellHeight;
+    int w = cellWidth;
+    int h = cellHeight;
+    enemy->magic = (Magic*)malloc(sizeof(Magic));
+    if (enemy->magic == NULL) {
+        fprintf(stderr, "Error: Unable to allocate memory for enemy magic\n");
+        exit(EXIT_FAILURE);
+    }
+    switch(type){
+        case ENEMY_TYPE_1:
+            enemy->field = (j+1)*9;
+            enemy->health = 100;
+            enemy->speed = 2;
+            enemy->attackPower = 10;
+            enemy->skill = "Crucio"; //癱瘓
+            enemy->texture = IMG_LoadTexture(renderer, "image/magician1.png");
+            enemy->rect =(SDL_Rect){x, y, w, h};
+            InitializeMagic(enemy->magic,5,enemy->rect);
+            break;
+        case ENEMY_TYPE_2:
+            enemy->field = (j+1)*9;
+            enemy->health = 100;
+            enemy->speed = 2;
+            enemy->attackPower = 10;
+            enemy->skill = "Imperio"; //改變陣營
+            enemy->texture = IMG_LoadTexture(renderer, "image/magician2.png");
+            enemy->rect =(SDL_Rect){x, y, w, h};
+            InitializeMagic(enemy->magic,6,enemy->rect);
+            break;
+        case ENEMY_TYPE_3:
+            enemy->field = (j+1)*9;
+            enemy->health = 100;
+            enemy->speed = 2;
+            enemy->attackPower = 1000;
+            enemy->skill = "Avada Kedavra";
+            enemy->texture = IMG_LoadTexture(renderer, "image/magician3.png");;
+            enemy->rect =(SDL_Rect){x, y, w, h};
+            InitializeMagic(enemy->magic,7,enemy->rect);
+            break;
+    }
+
+}
+
+void InitializePlayer(Player* player, PlayerType type, int x, int y, int w, int h) {
+    player->type = type;
+    player->magic = (Magic*)malloc(sizeof(Magic));
+    if (player->magic == NULL) {
+        fprintf(stderr, "Error: Unable to allocate memory for player magic\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    switch (type) {
+        case PLAYER_TYPE_1:
+            player->health = 100;
+            player->speed = 1;
+            player->attackPower = 10;
+            player->skill = "Will-O-Wisp";
+            player->paralyzedTurns = 0;
+            player->betrayalTurns = 0;
+            player->texture=normalPlayer;
+            player->rect=(SDL_Rect){x, y, w, h};
+            InitializeMagic(player->magic,1,player->rect);
+            break;
+        case PLAYER_TYPE_2:
+            player->health = 100;
+            player->speed = 1;
+            player->attackPower = 30;
+            player->skill = "Sickle";
+            player->paralyzedTurns = 0;
+            player->betrayalTurns = 0;
+            player->texture=normalPlayer;
+            player->rect=(SDL_Rect){x, y, w, h};
+            InitializeMagic(player->magic,2,player->rect);
+            break;
+        case PLAYER_TYPE_3:
+            player->health = 100;
+            player->speed = 1;
+            player->attackPower = 10;
+            player->skill = "Spell";
+            player->paralyzedTurns = 0;
+            player->betrayalTurns = 0;
+            player->texture=normalPlayer;
+            player->rect=(SDL_Rect){x, y, w*1.5, h};
+            InitializeMagic(player->magic,3,player->rect);
+            break;
+        case PLAYER_TYPE_4:
+            player->health = 500;
+            player->speed = 0;
+            player->attackPower = 10;
+            player->skill = "Expecto Patronum";
+            player->paralyzedTurns = 0;
+            player->betrayalTurns = 0;
+            player->texture=IMG_LoadTexture(renderer, "image/deer.png");
+            player->rect=(SDL_Rect){x, y, w, h};
+            InitializeMagic(player->magic,4,player->rect);
+            break;    
+        case PLAYER_TYPE_5:
+            player->health = 500;
+            player->speed = 0;
+            player->attackPower = 0;
+            player->skill = "guardrail1";
+            player->paralyzedTurns = 0;
+            player->betrayalTurns = 0;
+            player->texture=IMG_LoadTexture(renderer, "image/guardrail1.png");
+            player->rect=(SDL_Rect){x, y, w, h};
+            InitializeMagic(player->magic,8,player->rect);
+            break;    
+        case PLAYER_TYPE_6:
+            player->health = 1000;
+            player->speed = 0;
+            player->attackPower = 0;
+            player->skill = "guardrail2";
+            player->paralyzedTurns = 0;
+            player->betrayalTurns = 0;
+            player->texture=IMG_LoadTexture(renderer, "image/guardrail2.png");
+            player->rect=(SDL_Rect){x, y, w, h};
+            InitializeMagic(player->magic,9,player->rect);
+            break;    
+    }
+}
+
+void AddSpirit() {
+    
+    spirit.rect.x = fieldX + rand() % 1000;
+    spirit.rect.y = 0;
+    spirit.isActive = 1;
+}
+void UpdateSpirit() {
+    if (spirit.isActive) {
+        spirit.rect.y += fallingSpeed ;
+        if (spirit.rect.y > windowHeight) {
+            spirit.isActive = 0;
+        }
+    }
+}
+void AddEnemy(Enemy** head) {
+    
+    Enemy* newEnemy = (Enemy*)malloc(sizeof(Enemy));
+    int range = 2;
+    if (numSpirit>10)
+        range = 3;
+    int enemyType = rand() % range; 
+    EnemyType type;
+    switch (enemyType) {
+        case 0:
+            type = ENEMY_TYPE_1;
+            break;
+        case 1:
+            type = ENEMY_TYPE_2;
+            break;
+        case 2:
+            type = ENEMY_TYPE_3;
+            break;
+        default:
+            type = ENEMY_TYPE_1; 
+            break;
+    }
+    if (newEnemy == NULL) {
+        fprintf(stderr, "Error: Unable to allocate memory for new enemy\n");
+        exit(EXIT_FAILURE);
+    }
+    InitializeEnemy(newEnemy, type);
+    newEnemy->next = *head;
+    *head = newEnemy;
+}
+
+
+void AddPlayer(Player** head, PlayerType type, int x, int y, int w, int h) {
+    Player* newPlayer = (Player*)malloc(sizeof(Player));
+    if (newPlayer == NULL) {
+        fprintf(stderr, "Error: Unable to allocate memory for new player\n");
+        exit(EXIT_FAILURE);
+    }
+    InitializePlayer(newPlayer, type, x, y, w, h);
+    newPlayer->next = *head;
+    *head = newPlayer;
+}
+void RemoveEnemy(Enemy** head, Enemy* enemyToRemove) {
+    Enemy* current = *head;
+    Enemy* prev = NULL;
+    while (current != NULL) {
+        if (current == enemyToRemove) {
+            if (prev == NULL) {
+                *head = current->next;
+            } else {
+                prev->next = current->next;
+            }
+            free(current);
+            return;
+        }
+        prev = current;
+        current = current->next;
+    }
+}
+
+void RemovePlayer(Player** head, Player* playerToRemove) {
+    Player* current = *head;
+    Player* prev = NULL;
+    while (current != NULL) {
+        if (current == playerToRemove) {
+            if (prev == NULL) {
+                *head = current->next;
+            } else {
+                prev->next = current->next;
+            }
+            free(current);
+            return;
+        }
+        prev = current;
+        current = current->next;
+    }
+}
+void InitializeExpecto(Player** players, Field fields[], int fieldIndices[], int numFields, SDL_Texture* cellTexture) {
+    for (int i = 0; i < numFields; i++) {
+        int fieldIndex = fieldIndices[i];
+        AddPlayer(players, PLAYER_TYPE_4, fields[fieldIndex].rect.x, fields[fieldIndex].rect.y, fields[fieldIndex].rect.w, fields[fieldIndex].rect.h);
+        fields[fieldIndex].isSelected = 0;
+        fields[fieldIndex].texture = cellTexture;
+        fields[fieldIndex].whoOccupied = 1;
+        (*players)->field = fieldIndex;
+    }
+}
+
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    SDL_Window *window;
+    SDL_Event event;
+    BOOL running = TRUE;
+    srand((unsigned int)time(NULL));
+
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        MessageBox(NULL, TEXT("SDL failed"), TEXT("failed"), MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
+    SDL_DisplayMode displayMode;
+    if (SDL_GetCurrentDisplayMode(0, &displayMode) != 0) {
+        MessageBox(NULL, TEXT("monitor failed"), TEXT("failed"), MB_OK | MB_ICONERROR);
+        SDL_Quit();
+        return 1;
+    }
+
+    window = SDL_CreateWindow(
+        "Game",
+        SDL_WINDOWPOS_CENTERED,
+        SDL_WINDOWPOS_CENTERED,
+        windowWidth,
+        windowHeight,
+        SDL_WINDOW_SHOWN
+    );
+
+    if (!window) {
+        MessageBox(NULL, TEXT("can not create window"), TEXT("failed"), MB_OK | MB_ICONERROR);
+        SDL_Quit();
+        return 1;
+    }
+
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    if (!renderer) {
+        MessageBox(NULL, TEXT("can not create render"), TEXT("failed"), MB_OK | MB_ICONERROR);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    normalPlayer = IMG_LoadTexture(renderer, "image/dementor.png");
+    pPlayer = IMG_LoadTexture(renderer, "image/dementorP.png");
+    bPlayer = IMG_LoadTexture(renderer, "image/dementorB.png");
+
+    // show cross
+    const char* cross = "image/cross.png"; 
+    SDL_Texture* crossTexture = IMG_LoadTexture(renderer, cross);
+    if (!crossTexture) {
+        MessageBox(NULL, TEXT(IMG_GetError()), TEXT("failed"), MB_OK | MB_ICONERROR);
+
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    SDL_Rect crossRect = {windowWidth - 100, 0, 100, 100}; 
+
+    // show field
+    const char* field = "image/field.png"; 
+    SDL_Texture* cellTexture = IMG_LoadTexture(renderer, field);
+    if (!cellTexture) {
+        MessageBox(NULL, TEXT(IMG_GetError()), TEXT("failed"), MB_OK | MB_ICONERROR);
+
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    fieldHeight = windowHeight-100;  
+    cellWidth = fieldWidth / FieldCol;
+    cellHeight = fieldHeight / FieldRow;
+    for (int i = 0; i < FieldCol; i++) {
+        for (int j = 0; j < FieldRow; j++) {
+            fields[i * FieldRow + j].rect = (SDL_Rect){fieldX + i * cellWidth, fieldY + j * cellHeight, cellWidth, cellHeight};
+            fields[i * FieldRow + j].isSelected = 0;
+            fields[i * FieldRow + j].texture = cellTexture; 
+            fields[i * FieldRow + j].whoOccupied = 0;
+        }
+    }
+
+    
+    // show enemy home
+    const char* enemyHome = "image/enemyHome.png"; 
+    SDL_Texture* enemyHomeTexture = IMG_LoadTexture(renderer, enemyHome);
+    if (!enemyHomeTexture) {
+        MessageBox(NULL, TEXT(IMG_GetError()), TEXT("failed"), MB_OK | MB_ICONERROR);
+
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    SDL_Rect enemyHomeRect = {
+    fieldX + fieldWidth,         
+    100,                     
+    150,
+    windowHeight                
+    };
+
+    // show player home
+    const char* playerHome = "image/playerHome.png"; 
+    SDL_Texture* playerHomeTexture = IMG_LoadTexture(renderer, playerHome);
+    if (!playerHomeTexture) {
+        MessageBox(NULL, TEXT(IMG_GetError()), TEXT("failed"), MB_OK | MB_ICONERROR);
+
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    SDL_Rect playerHomeRect = {
+    0,         
+    100,                     
+    150,
+    windowHeight                
+    };
+
+    // show item box
+    const char* itemBox[numItems] = {
+        "image/item1.png",
+        "image/item2.png",
+        "image/item3.png",
+        "image/item4.png",
+        "image/item5.png",
+    };
+    const char* itemBoxBlock[numItems] = {
+        "image/item1Block.png",
+        "image/item2Block.png",
+        "image/item3Block.png",
+        "image/item4Block.png",
+        "image/item5Block.png",
+    };
+    const char* itemDragged[numItems] = {
+        "image/dementorFire.png",
+        "image/dementorSickle.png",
+        "image/dementorSpell.png",
+        "image/guardrail1.png",
+        "image/guardrail2.png",
+    };
+    const char* itemlock[numItems] = {
+        "image/item1lock.png",
+        "image/item2lock.png",
+        "image/item3lock.png",
+        "image/item4lock.png",
+        "image/item5lock.png",
+    };
+    ItemBox items[numItems];
+    int squareSize=100;
+    SDL_Texture* itemBoxTexture[numItems] ;
+    SDL_Texture* itemBoxBlockTexture[numItems];
+    SDL_Texture* itemBoxlockTexture[numItems];
+    for(int i=0; i<numItems ;i++){
+        itemBoxTexture[i] = IMG_LoadTexture(renderer, itemBox[i]);
+        itemBoxBlockTexture[i] = IMG_LoadTexture(renderer, itemBoxBlock[i]);
+        itemBoxlockTexture[i] = IMG_LoadTexture(renderer, itemlock[i]);
+            
+    }
+    for (int i = 0; i < numItems; i++) {
+        items[i].time = 0;
+        if(i==0||i==3){
+            items[i].isActive = 1;
+            items[i].texture = itemBoxTexture[i];
+        }
+        else{
+            items[i].isActive = 0; 
+            items[i].texture = itemBoxlockTexture[i];
+        }
+            
+        items[i].textureDraged = IMG_LoadTexture(renderer, itemDragged[i]);
+        if (!items[i].texture) {
+            MessageBox(NULL, TEXT(IMG_GetError()), TEXT("failed"), MB_OK | MB_ICONERROR);
+            SDL_DestroyRenderer(renderer);
+            SDL_DestroyWindow(window);
+            SDL_Quit();
+            return 1;
+        }
+        items[i].rect.x = squareSize * i;
+        items[i].rect.y = 0;
+        items[i].rect.w = squareSize;
+        items[i].rect.h = squareSize;
+    }    
+    // show new army - army
+    SDL_Rect newArmyRect;
+    SDL_Texture* newArmyTexture;
+    int newArmyGenerated = 0;
+    int draggingNewArmy = 0;
+
+    // show new army - field
+    SDL_Texture* overlayImageTexture =IMG_LoadTexture(renderer, "image/fieldChosen.png");
+    SDL_Rect overlayImageRect = {0, 0, fieldWidth / FieldCol, fieldHeight / FieldRow};
+    int showOverlayImage = 0;
+    SDL_Texture* occupiedImageTexture =IMG_LoadTexture(renderer, "image/fieldOccupied.png");
+    SDL_Rect occupiedImageRect = {0, 0, fieldWidth / FieldCol, fieldHeight / FieldRow};
+
+    //basic information
+    int kill=0;
+    int Nume = 0;
+    Player* players = NULL;
+    PlayerType type;
+    int lastDrag=0;
+    Enemy* enemies = NULL;
+    int round=0;
+    int fieldIndices[] = {0, 1, 2, 3, 4};
+    InitializeExpecto(&players, fields, fieldIndices, 5, cellTexture);
+    int scrollX = 0;  
+    int scrolly = 0;
+    spirit.texture = IMG_LoadTexture(renderer, "image/spirit.png");
+    spirit.rect.w = SizeOfSpirit;
+    spirit.rect.h = SizeOfSpirit;
+    spirit.isActive = 0;
+
+    SDL_Texture* protect =IMG_LoadTexture(renderer, "image/protect.png");
+    while (running) {
+        for(int i=0;i<numItems;i++){
+            if(items[i].time>0){
+                items[i].time--;
+                if(items[i].time==0){
+                    items[i].texture = itemBoxTexture[i];
+                }
+            }
+                
+            
+        }
+        while (SDL_PollEvent(&event)) {
+            
+            if (event.type == SDL_QUIT) {
+                running = FALSE;
+            }
+            else if (event.type == SDL_MOUSEBUTTONDOWN) {
+                int mouseX, mouseY;
+                SDL_GetMouseState(&mouseX, &mouseY);
+                if (mouseX >= crossRect.x && mouseX <= (crossRect.x + crossRect.w) &&
+                    mouseY >= crossRect.y && mouseY <= (crossRect.y + crossRect.h)) {
+                    running = FALSE;  
+                }
+                if (spirit.isActive &&
+                    mouseX >= spirit.rect.x && mouseX <= (spirit.rect.x + spirit.rect.w) &&
+                    mouseY >= spirit.rect.y && mouseY <= (spirit.rect.y + spirit.rect.h)) {
+                    numSpirit++; 
+                    printf("=========Add Spirit %d============\n",numSpirit);
+                     
+                    spirit.isActive = 0;
+                }
+                else{
+                    printf("=================%d============\n",spirit.isActive);
+                }
+                if (!newArmyGenerated) {
+                    for (int i = 0; i <numItems; i++) {
+                        if (mouseX >= items[i].rect.x && mouseX <= (items[i].rect.x + items[i].rect.w) &&
+                            mouseY >= items[i].rect.y && mouseY <= (items[i].rect.y + items[i].rect.h)) {
+                            if(items[i].time > 0 || !items[i].isActive)
+                                continue;
+                            newArmyRect = (SDL_Rect){
+                                mouseX ,
+                                mouseY ,
+                                fieldWidth / FieldCol,
+                                fieldHeight / FieldRow
+                            };
+                            newArmyTexture = items[i].textureDraged;
+                            newArmyGenerated = 1;
+                            draggingNewArmy = 1; 
+                            switch(i){
+                                case 0:
+                                    type = PLAYER_TYPE_1;
+                                    break;
+                                case 1:
+                                    type = PLAYER_TYPE_2;
+                                    break;
+                                case 2:
+                                    type = PLAYER_TYPE_3;
+                                    break;
+                                case 3:
+                                    type = PLAYER_TYPE_5;
+                                    break;
+                                case 4:
+                                    type = PLAYER_TYPE_6;
+                                    break;
+                            }
+                            break;
+                        }
+                    }
+                } else if (mouseX >= newArmyRect.x && mouseX <= (newArmyRect.x + newArmyRect.w) &&
+                           mouseY >= newArmyRect.y && mouseY <= (newArmyRect.y + newArmyRect.h)) {
+                    draggingNewArmy = 1; 
+                }
+                break;
+            }
+            else if(event.type == SDL_MOUSEBUTTONUP){
+                int hit = 0;
+                for (int i = 0; i < FieldCol * FieldRow; i++) {
+                    if (CheckOverlap(newArmyRect, fields[i].rect)) {
+                        if(fields[i].whoOccupied){
+                            draggingNewArmy = 0;
+                            break;
+                        }
+                        draggingNewArmy = 0;
+                        newArmyGenerated = 0;
+                        AddPlayer(&players, type, fields[i].rect.x,fields[i].rect.y, fields[i].rect.w, fields[i].rect.h);
+                        int itemIndex;
+                        switch(type){
+                            case PLAYER_TYPE_1:
+                                itemIndex=0;
+                                items[itemIndex].time = Timer1;
+                                break;
+                            case PLAYER_TYPE_2:
+                                itemIndex=1;
+                                items[itemIndex].time = Timer2;
+                                break;
+                            case PLAYER_TYPE_3:
+                                itemIndex=2;
+                                items[itemIndex].time = Timer3;
+                                break;
+                            case PLAYER_TYPE_5:
+                                itemIndex=3;
+                                items[itemIndex].time = Timer4;
+                                break;
+                            case PLAYER_TYPE_6:
+                                itemIndex=4;
+                                items[itemIndex].time = Timer5;
+                                break;
+                        }
+                        items[itemIndex].texture = itemBoxBlockTexture[itemIndex];
+                        fields[i].isSelected = 0;
+                        fields[i].texture = cellTexture;
+                        fields[i].whoOccupied=1;
+                        players->field = i;
+                        hit = 1 ;
+                        break;
+                    }
+                    if(!hit&&newArmyGenerated){
+                        newArmyGenerated = 0;
+                        draggingNewArmy = 0;
+                    }
+                }
+                break;
+            }
+            else if(event.type == SDL_MOUSEMOTION){
+                int mouseX, mouseY;
+                SDL_GetMouseState(&mouseX, &mouseY);
+                scrollX += event.motion.xrel;
+                scrolly += event.motion.yrel;
+                if (scrollX < 0) 
+                    scrollX = 0;
+                if (scrollX > fieldWidth - windowWidth + 300) 
+                    scrollX = fieldWidth - windowWidth + 300;
+                if (draggingNewArmy) {
+                    newArmyRect.x = mouseX - newArmyRect.w / 2 + scrollX;
+                    newArmyRect.y = mouseY - newArmyRect.h / 2 + scrolly; 
+                    for (int i = 0; i < FieldCol * FieldRow; i++){
+                        if (CheckOverlap(newArmyRect, fields[i].rect)&&!fields[i].whoOccupied) {
+                            fields[lastDrag].isSelected=0;
+                            fields[lastDrag].texture = cellTexture;
+                            lastDrag=i;
+                            fields[i].isSelected = 1;
+                            fields[i].texture = overlayImageTexture;
+                            break;
+                        }
+                        else if(CheckOverlap(newArmyRect, fields[i].rect)&&fields[i].whoOccupied){
+                            fields[lastDrag].isSelected=0;
+                            fields[lastDrag].texture = cellTexture;
+                            lastDrag=i;
+                            fields[i].isSelected = 1;
+                            fields[i].texture = occupiedImageTexture;
+                            break;
+                        }
+                    }
+                    
+                }
+                break;
+            }
+        }
+        round++;
+        if (round%AddNewEnemy==0)
+        {
+            if(Nume < 30){
+                AddEnemy(&enemies);
+                Nume++;
+            }
+            
+        }
+        if(round%AddNewSpirit==0){
+            if(!spirit.isActive)
+                AddSpirit();
+        }
+        if (round%UpdateRole==0){
+            if(spirit.isActive)
+                UpdateSpirit();
+            // player Upadate
+            Player* current = players; 
+            Player* prev = NULL;
+            while (current != NULL) {
+                if (current->health <= 0) {
+                    fields[current->field].whoOccupied=0;
+                    RemovePlayer(&players, current); 
+                    if (prev == NULL) {
+                        current = players; 
+                    } else {
+                        current = prev->next;
+                    }
+                } else{
+                    
+                    UpdateMagic(current->magic,current,enemies,enemyHomeRect);
+                    UpdatePlayer(current);
+                    prev = current;
+                    current = current->next;
+                }
+            }
+            // enemy update
+            Enemy* currentEnemy = enemies;
+            Enemy* prevEnemy = NULL;
+            while (currentEnemy != NULL) {
+                if (currentEnemy->health <= 0) {
+                    RemoveEnemy(&enemies, currentEnemy); 
+                    kill++;
+                    if(kill==GOAL){
+                        GameWin=true;
+                        break;
+                    }
+                    if (prevEnemy == NULL) {
+                        currentEnemy = enemies;
+                    } else {
+                        currentEnemy = prevEnemy->next;
+                    }
+                } else {
+                    
+                    UpdateMagic(currentEnemy->magic,players,currentEnemy,playerHomeRect);
+                    UpdateEnemy(currentEnemy,playerHomeRect,players); 
+                    prevEnemy = currentEnemy;
+                    currentEnemy = currentEnemy->next;
+                }
+            }
+            
+        }
+        
+        if(numSpirit == Unlock2){
+            items[1].texture=itemBoxTexture[1];
+            items[1].isActive = 1;
+        }
+        if(numSpirit == Unlock3){
+            items[2].texture=itemBoxTexture[2];
+            items[4].texture=itemBoxTexture[4];
+            items[2].isActive = 1;
+            items[4].isActive = 1;
+        }
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); 
+        SDL_RenderClear(renderer);
+
+
+        // 渲染圖片
+        SDL_Rect fullScreenRect = {0, 0, windowWidth, windowHeight};
+        
+        if (GameOver) {
+            SDL_Texture* gameOverTexture = IMG_LoadTexture(renderer, "image/GameOver.png");
+            SDL_RenderCopy(renderer, gameOverTexture, NULL, &fullScreenRect);
+            SDL_RenderPresent(renderer);
+            SDL_Delay(5000); 
+            break; 
+        }
+       
+
+        if (GameWin) {
+            SDL_Texture* gameWinTexture = IMG_LoadTexture(renderer, "image/GameWin.png");
+            SDL_RenderCopy(renderer, gameWinTexture, NULL, &fullScreenRect);
+            SDL_RenderPresent(renderer);
+            SDL_Delay(5000); 
+            break; 
+        }
+        SDL_RenderCopy(renderer, crossTexture, NULL, &crossRect);
+        
+        for (int i = 0; i < numItems; i++) {
+            SDL_RenderCopy(renderer, items[i].texture, NULL, &items[i].rect);
+        }
+
+        SDL_Rect scrollableViewport = {0, 0, windowWidth, windowHeight};
+        SDL_RenderSetViewport(renderer, &scrollableViewport);
+
+        for (int i = 0; i < FieldCol * FieldRow; i++) {
+            SDL_Rect fieldRect = fields[i].rect;
+            fieldRect.x -= scrollX;
+            SDL_RenderCopy(renderer, fields[i].texture, NULL, &fieldRect);
+        }
+        SDL_Rect adjustedEnemyHomeRect = enemyHomeRect;
+        adjustedEnemyHomeRect.x -= scrollX;
+        SDL_RenderCopy(renderer, enemyHomeTexture, NULL, &adjustedEnemyHomeRect);
+        SDL_Rect adjustedPlayerHomeRect = playerHomeRect;
+        adjustedPlayerHomeRect.x -= scrollX;  
+        SDL_RenderCopy(renderer, playerHomeTexture, NULL, &adjustedPlayerHomeRect);
+        
+        if (newArmyGenerated) {
+            SDL_Rect adjustedNewArmyRect = newArmyRect;
+            adjustedNewArmyRect.x -= scrollX;  
+            SDL_RenderCopy(renderer, newArmyTexture, NULL, &adjustedNewArmyRect);
+        }
+        if(spirit.isActive){
+            SDL_Rect adjustedSpirit = spirit.rect;
+            adjustedSpirit.x -= scrollX; 
+            SDL_RenderCopy(renderer, spirit.texture, NULL, &adjustedSpirit);
+        }
+
+        Player* current = players;
+        while (current != NULL) {
+            SDL_Rect adjustedPlayerRect = current->rect;
+            adjustedPlayerRect.x -= scrollX;  
+            if (SDL_RenderCopy(renderer, current->texture, NULL, &adjustedPlayerRect) != 0) {
+                const char* error = SDL_GetError();
+                MessageBox(NULL, error, "RenderCopy Error", MB_OK | MB_ICONERROR);
+            }
+
+            if (current->magic->isActive) {
+                SDL_Rect adjustedMagicRect = current->magic->rect;
+                adjustedMagicRect.x -= scrollX; 
+                SDL_RenderCopy(renderer, current->magic->texture, NULL, &adjustedMagicRect);
+            }
+
+            current = current->next;
+        }
+
+        Enemy* currentEnemy = enemies;
+        while (currentEnemy != NULL) {
+            SDL_Rect adjustedEnemyRect = currentEnemy->rect;
+            adjustedEnemyRect.x -= scrollX;  
+            SDL_RenderCopy(renderer, currentEnemy->texture, NULL, &adjustedEnemyRect);
+
+            if (currentEnemy->magic->isActive) {
+                SDL_Rect adjustedMagicRect = currentEnemy->magic->rect;
+                adjustedMagicRect.x -= scrollX;  
+                SDL_RenderCopy(renderer, currentEnemy->magic->texture, NULL, &adjustedMagicRect);
+            }
+            
+            currentEnemy = currentEnemy->next;
+        }
+        //SDL_RenderCopy(renderer, protect, NULL, &fullScreenRect);
+        SDL_RenderSetViewport(renderer, NULL);    
+        SDL_RenderPresent(renderer);
+    }
+    Player* current = players;
+    while (current != NULL) {
+        Player* next = current->next;
+        free(current); 
+        current = next; 
+    }
+    players = NULL; 
+    Enemy* currentEnemy = enemies;
+    while(currentEnemy!=NULL){
+        Enemy* next = currentEnemy->next;
+        free(currentEnemy);
+        currentEnemy = next;
+    }
+    enemies=NULL;
+    SDL_DestroyTexture(crossTexture);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    IMG_Quit();
+
+    return 0;
+}
